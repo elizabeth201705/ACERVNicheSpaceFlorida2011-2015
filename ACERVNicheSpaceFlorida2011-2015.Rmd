@@ -1,0 +1,826 @@
+
+---
+title: "Code for Niche space of Acropora cervicornis in the Florida reef tract"
+author: "Elizabeth Brown"
+date: "4/7/18"
+editor_options: 
+  chunk_output_type: console
+---
+Adapted from "tutorial_cut down for running.R" Jane Elith and John Leathwick
+
+```{r setup libraries / projections / image settings}
+
+setwd() #set working directory to where all files are located
+
+library(raster)
+library(rgdal)
+library(dismo)
+library(rworldmap)
+
+#projections
+eqc<- "+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+longlat<- '+proj=longlat +ellps=WGS84 +no_defs'
+utm <- "+proj=utm +zone=17 +units=km +datum=WGS84"
+aea <- "+proj=aea +lat_1=24 +lat_2=31.5 +lat_0=24 +lon_0=-84 +x_0=400000 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs +towgs84=0,0,0"
+
+#map graphics
+wholeworld<-getMap(resolution="high")
+FLMap<-crop(wholeworld, c(-84,-79,24,28))
+FLMap<-spTransform(FLMap, longlat)
+
+library(extrafont)
+font_import()
+y
+loadfonts(device = "win")
+```
+
+Read in and set up biological presence/absence data 2011-2015
+Training datasets - FRRP & SCREAM
+Testing dataset - CREMP
+```{r FRRP 2011-2015}
+library(stringr)
+FRRP<-read.csv("AllCorals2016B.csv")
+FRRP$Year<-as.numeric(str_sub(FRRP$Date,-4,-1))
+FRRPCorals2011_2015<-subset(FRRP, FRRP$Code!="L2150" & FRRP$Code!="L2151" & FRRP$Year > 2010 & FRRP$Year <2016)
+
+FRRP_ACERV<-subset(FRRPCorals2011_2015, FRRPCorals2011_2015$Species==1)
+FRRP_ACERV_nodup<- subset(FRRP_ACERV, !duplicated(FRRP_ACERV$Code))
+
+FRRP_noACERV <- subset(FRRPCorals2011_2015, !FRRPCorals2011_2015$Code %in% FRRP_ACERV_nodup$Code)
+FRRP_noACERV_nodup<- subset(FRRP_noACERV, !duplicated(FRRP_noACERV$Code))
+
+dim(FRRP_ACERV_nodup) # 80 unique sites with ACERV presence
+dim(FRRP_noACERV_nodup)# 946 unique sites with absence of ACERV
+```
+```{r SCREAM 2011-2015}
+SCREAM<-read.csv("SCREAM_acroColDen_Site_1999_2015.csv")
+Scream2011_2015<-subset(SCREAM, SCREAM$Year>2010)
+Scream2011_2015$ACERV[Scream2011_2015$ACERV>0]<-1
+
+ScreamPres<-subset(Scream2011_2015, Scream2011_2015$ACERV>0)
+ScreamPres_nodup<- subset(ScreamPres, !duplicated(ScreamPres$Site))
+
+ScreamAbs<-subset(Scream2011_2015, Scream2011_2015$ACERV==0)
+ScreamAbs_nodup <- subset(ScreamAbs, !duplicated(ScreamAbs$Site))
+dim(ScreamPres_nodup) # 122 unique sites with ACERV presence
+dim(ScreamAbs_nodup)# 1087 unique sites with absence of ACERV
+
+#combine FRRP and SCREAM for training dataset
+PresLatitudes<-c(FRRP_ACERV_nodup$Latitude, ScreamPres$Latitude) #80+122=203 total presence points
+PresLongitudes<-c(FRRP_ACERV_nodup$Longitude, ScreamPres$Longitude)
+AbsLatitudes<-c(FRRP_noACERV_nodup$Latitude, ScreamAbs$Latitude)
+AbsLongitudes<-c(FRRP_noACERV_nodup$Longitude, ScreamAbs$Longitude) #946+1087=2033 total absence points
+length(PresLatitudes)
+length(AbsLatitudes)
+
+totalPres <- cbind(rep(1, 202), PresLatitudes, PresLongitudes) 
+totalAbs <- cbind(rep(0, 2033), AbsLatitudes, AbsLongitudes)
+ACERVpaFinal<-data.frame(rbind(totalPres,totalAbs))
+head(ACERVpaFinal)
+
+ACERVallxy<-data.frame(cbind( ACERVpaFinal[,3], ACERVpaFinal[,2]))
+ACERVpaFinalpts<-SpatialPoints(coords=ACERVallxy, proj4string=CRS(longlat))
+ACERVFinalutm<-spTransform(ACERVpaFinalpts, utm)
+
+```
+```{r CREMP 2011-2015}
+
+CREMPlocations<-read.csv("CREMP_Locations.csv")
+CREMP<-read.csv("CREMP_Core_Species_Richness_Table.csv")
+CREMPall<-merge(CREMP, CREMPlocations, by="siteid")
+CREMPall2011<-CREMPall[(CREMPall$Year>=2011)&(CREMPall$Year<=2015),]
+
+CREMPpres<-subset(CREMPall2011, CREMPall2011$Acropora_cervicornis==1)
+CREMPpresNoDup<-subset(CREMPpres, !duplicated(CREMPpres$siteid))
+
+CREMPabs <- subset(CREMPall2011, !CREMPall2011$siteid %in% CREMPpresNoDup$siteid)
+CREMPabsNoDup<- subset(CREMPabs, !duplicated(CREMPabs$siteid))
+head(CREMPabs)
+CREMPunique<-rbind(CREMPpresNoDup, CREMPabsNoDup)
+
+testCREMP<-SpatialPoints(cbind(CREMPunique$lonDD, CREMPunique$latDD))
+
+```
+
+Figure 2. Presence locations used to train and test the Acropora cervicornis niche model along the Florida reef tract (2011-2015).
+```{r Site figure }
+library(ggmap)
+
+#acropora critical habitat shapefile
+critical <- readOGR(".","Acropora_Critical_Habitat")
+
+#Get map
+m <- get_map(c(-81.5,25.6),zoom=8,maptype="satellite",source="google")
+ggmap(m) + 
+  geom_polygon(data = fortify(critical),
+                  aes(long, lat, group = group),
+                  fill = "black", lwd=1, alpha = 0) +
+  geom_point(data = ScreamPres_nodup,
+             aes(x = Longitude, y = Latitude), shape = 3,cex=3,
+             color = "white", alpha = 0.7) + 
+  geom_point(data = FRRP_ACERV_nodup,
+             aes(x = Longitude, y = Latitude), shape = 3,cex=3,
+             color = "red", alpha = 0.7) + 
+  geom_point(data = CREMPpresNoDup,
+             aes(x = lonDD, y = latDD), shape = 3,cex=3,
+             color = "yellow", alpha = 0.7)+
+
+   theme(legend.justification = c(0, 0), legend.position = c(0, 1))
+ggsave("Fig2back.png", height=6.5, units = "in")
+
+#inset map for figure 2
+plot_Fig1_inset <- function (){
+  plot(wholeworld, xlim=c(-130,-35), ylim=c(-10,40), col = "black", xaxt="n", yaxt="n")
+  plot(extent(c(-83,-80,24.3,27.3)), add= TRUE, col = "green3", lwd = 3)
+    maps::map.scale(x= -125, y= -10, relwidth=0.3, ratio=FALSE)
+    axis(1, at=seq(-120,-30.,20),seq(-120,-30.,20), NA, cex.axis=1, font=1, tck=.02)
+    axis(2, at=seq(-20,40,20), seq(-20,40,20), cex.axis=1, font=1, tck=.02)
+    axis(3, at=seq(-120,-30.,20),seq(-120,-30.,20), NA, cex.axis=1, font=1, tck=.02)
+    axis(4, at=seq(-20,40,20), seq(-20,40,20), cex.axis=1, font=1, tck=.02)
+    text(c(-120,-80), -25, c("120°W", "80°W"))
+    text( -126, c(0,20), c("0", "20°N"))
+    box(which="plot")
+    arrows(-52, 25, -52, 37, length=0.1)
+    text(-52, 30, "N")
+}
+png( "Fig2inset.png",  width= 3,  height= 3.1,  units = "in",
+  res   = 300,  pointsize = 8)
+plot_Fig1_inset() #print figure
+dev.off()
+```
+
+Read in environmental raster data
+Output files needed for the BRT
+```{r Environmental variables}
+
+#Create blank reef mask from Unified Florida Reef Tract polygon
+unified <- readOGR(".","UnifiedFloridaReefTract_poly")
+unifiedutm<- spTransform(unified, utm)
+
+criticalutm<-spTransform(critical, utm)
+criticalutmcrop<-crop(criticalutm, extent(288.9702, 597.0663, 2702.092, 2936.424))
+northunifiedutmcrop<-crop(unifiedutm, extent(288.9702, 597.0663, 2936.424, 3016.051))
+northunifiedcropaggregated<-aggregate(northunifiedutmcrop)
+criticalutmcropAggregated<-aggregate(criticalutmcrop)
+
+allReef<-bind( criticalutmcrop,northunifiedcropaggregated)
+
+emptyRaster <- raster(resolution = c(1, 1), xmn = 298.5721, xmx = 601.0686, ymn= 2700.835, ymx = 3016.051, crs = utm)
+emptyRaster[]<-1
+extentmask<-mask(emptyRaster, unifiedutm)
+
+#(i) depth, (ii & iii) mean and variance of daily sea surface temperature, (iv) chlorophyll-a concentrations, (v) turbidity, (vi) wave energy, and (vii) distance from coast
+
+#(i) depth
+depthm <- "depthm.txt"
+depthmr<- raster(depthm, values=TRUE)
+e=extent(481304.821426, 807304.821426, 32335.4432404, 377335.44324)
+extentraster<-raster(e, nrows=326, ncols=345, crs=aea)
+proj4string(depthmr)<-aea
+Depthmutm<-projectRaster(depthmr,crs=utm)
+depth_1km<-resample(Depthmutm, extentmask, method="ngb")
+
+#(ii) mean of daily sea surface temperature
+meanDailySST<-raster("meanDailySST2011-2015.tif")
+meanDailySSTutm<- projectRaster(meanDailySST, crs=utm)
+meanDailySST_1km<-resample(meanDailySSTutm, extentmask, method="bilinear")
+#plot(meanDailySST_1km)
+
+#(iii) variance of daily sea surface temperature
+varDailySST<-raster("varianceDailySST2011-2015.tif")
+varDailySSTutm<- projectRaster(varDailySST, crs=utm)
+varDailySST_1km<-resample(varDailySSTutm, extentmask, method="bilinear")
+#plot(varDailySST_1km)
+
+#(iv) chlorophyll-a concentrations
+meanChla2011_2015<-raster("meanDailyChla2011-2015_1km.asc")
+proj4string(meanChla2011_2015)<-eqc
+meanChla2011_2015utm<-projectRaster(meanChla2011_2015, crs=utm)
+meanChla2011_2015_1km<-resample(meanChla2011_2015utm, extentmask, method="bilinear")
+#plot(meanChla2011_2015_1km)
+
+#(v) turbidity
+meanDailyKD490<-raster("avgDailyKD4902013-2015.tif")
+meanDailyKD490utm<-projectRaster(meanDailyKD490, crs=utm)
+kd490_1km<-resample(meanDailyKD490utm, extentmask, method = "bilinear")
+kd490_1km<-mask(kd490_1km, extentmask)
+#plot(kd490_1km)
+
+#(vi) wave energy
+waveEnergy<- raster("AverageDailyWE2011-2015.tif")
+waveEnergyutm<-projectRaster(waveEnergy, crs=utm)
+waveEnergyutmkJ<-waveEnergyutm/1000
+waveEnergy_1km<-resample(waveEnergyutmkJ, extentmask, method="bilinear")
+#plot(waveEnergy_1km)
+
+#(vii) distance from coast
+land_utm<-spTransform(FLMap, utm)
+# Rasterize land pixels
+r2 <- rasterize(land_utm, extentmask, 1)
+# Calculate distance to nearest non-NA pixel
+d <- distance(r2)
+distFromCoast<-mask(d, extentmask)
+#plot(distFromCoast)
+
+#####output asciis
+
+writeRaster(extentmask,'blank_1km.asc', format='ascii', overwrite=TRUE)
+writeRaster(depth_1km,'depth_1km.asc', format='ascii', overwrite=TRUE)
+writeRaster(meanDailySST_1km,'meanDailySST_2011_2015.asc', format='ascii', overwrite=TRUE)
+writeRaster(varDailySST_1km,'varDailySST_2011_2015.asc', format='ascii', overwrite=TRUE)
+writeRaster(meanChla2011_2015_1km,'meanChla_2011_2015.asc', format='ascii', overwrite=TRUE)
+writeRaster(kd490_1km,'kd490_2013_2015.asc', format='ascii', overwrite=TRUE)
+writeRaster(waveEnergy_1km,'WE_2011_2015.asc', format='ascii', overwrite=TRUE)
+writeRaster(distFromCoast,'distFromCoast.asc', format='ascii', overwrite=TRUE)
+
+allPredictors<-stack(depth_1km, meanDailySST_1km, varDailySST_1km, meanChla2011_2015_1km,  kd490_1km, waveEnergy_1km, distFromCoast)
+names(allPredictors) <- c( "Depth","MeanSST", "VarianceSST","Chlorophylla",  "Turbidity","WaveEnergy", "distFromCoast")
+
+finalPredictors<-stack(depth_1km, meanDailySST_1km, varDailySST_1km,   kd490_1km, waveEnergy_1km, distFromCoast)
+names(finalPredictors) <- c( "Depth","MeanSST", "VarianceSST","Turbidity","WaveEnergy", "distFromCoast")
+
+sdmdataFinal<- extract(finalPredictors, ACERVFinalutm)
+ACERVpaDataFinal<- cbind(ACERVpaFinal,sdmdataFinal)
+names(ACERVpaDataFinal)<- c("pa", "latitude", "longitude", "Depth", "MeanSST", "VarianceSST",  "Turbidity", "WaveEnergy", "DistanceFromCoast")
+write.csv(ACERVpaDataFinal, "ACERV_pa_data.csv")
+```
+
+S1 Figure. Environmental raster data.
+```{r Environmental raster data. }
+library(GISTools)
+# create function to add Florida map, axes, scale bar, and north arrow
+
+FLMapfun <- function() {
+    plot(FLMap, add = TRUE, col = "gray")
+    box(which="plot", lwd=1)
+    axis(1, at=seq(-83,-80.,1), NA, cex.axis=3, tck=.02)
+    axis(2, at=seq(25,27.,1), NA, cex.axis=3, tck=.02)
+    axis(3, at=seq(-83,-80.,1), NA, cex.axis=3, tck=.02)
+    axis(4, at=seq(25,27.,1), NA, cex.axis=3, tck=.02)
+    maps::map.scale(x= -82.9, y= 25.7, relwidth=0.2, ratio=FALSE)
+    arrows(-83, 26.5, -83, 27, length=0.1)
+    text(-83, 26.7, "N", cex=1.2)
+    text(c(-81,-80.1), 24.5, c("81°W", "80°W"))
+    text(-82.9, seq(25,26,1), c("25°N", "26°N"))
+}
+
+predictors_longlat<-projectRaster(allPredictors, crs = longlat)
+
+#function to plot variables and add map elements
+plot_S1_Figure <- function(){
+  plot(predictors_longlat, 
+       main = c("Depth (m)",  "Mean Daily SST (°C)", expression(paste("Thermal Variability (",degree,"C)")), expression(paste("Chlorophyll-a (mg ", m^{-3})~ ")"), expression(paste("Turbidity (", m^{-1})~ ")"), expression(paste("Wave Energy (kJ ", m^{-2})~ ")"), "Distance From Coast (km)"),
+       yaxt='n', xaxt='n', 
+       legend.width=1,
+       addfun = FLMapfun, nc = 3, nr = 3, family = "Arial")
+
+}
+png(  "S1Figure.png",  width     = 5.5,  height    = 4.5,  units= "in",
+  res       = 600,  pointsize = 8
+)
+plot_S1_Figure() #print figure
+dev.off()
+
+```
+
+S2 Figure. Correlogram of environmental predictors.
+```{r  Correlogram of environmental predictors }
+library(corrplot)
+
+par(mar=c(2,2,2,2))
+predictor_correlations=layerStats(allPredictors, 'pearson', na.rm=T)
+corr_matrix=predictor_correlations$'pearson correlation coefficient'
+
+corrplot(corr_matrix, method="color", addCoef.col = "black",sig.level = 0.05)
+```
+
+Fit Boosted Regression tree 
+-The code to run the model has been commented out because every iteration introduces some stochasticity. To run my exact model, read in "ACERV_BRT_Model.rds"
+```{r fit model acerv.brt }
+
+source("brt.functions.R")
+library(gbm)
+# set starting number of trees to 30
+# Set tree complexity to 5
+# set learning rate to 0.005
+# set bag fraction to 0.75
+
+#  set.seed(0)
+#ACERV_BRT_Model <- gbm.step(
+#  data = ACERVpaDataFinal,
+#  gbm.x = 4:9, #columns of predictor variables
+#  gbm.y = 1, #column of pa response variable
+#  family = "bernoulli",
+#  n.trees = 30,
+#  tree.complexity = 5,
+#  learning.rate = 0.005,
+#  bag.fraction = 0.75
+#)
+#save model
+#saveRDS(ACERV_BRT_Model, file = "ACERV_BRT_Model.rds", ascii = FALSE)
+#load model
+
+ACERV_BRT_Model<-readRDS("ACERV_BRT_Model.rds", refhook = NULL)
+
+```
+
+Model statistics
+```{r model evaluation}
+ACERV_BRT_Model$n.trees
+ACERV_BRT_Model$bag.fraction
+ACERV_BRT_Model$self.statistics
+ACERV_BRT_Model$cv.statistics
+
+mean(ACERV_BRT_Model$cv.roc.matrix)
+sd(ACERV_BRT_Model$cv.roc.matrix)
+```
+
+Output the SDM
+-Input a "blank" ascii of 1s as the prediction space and 0s as noData
+-Input individual asciis of each predictor
+```{r predict SDM to acerv_preds.asc}
+#Check the order of the column in the presence/absence data
+names(ACERVpaDataFinal)[4:9]
+
+#Make grid names the same order with the prediction space first
+keys.grid.names <-
+  c(
+    "blank_1km.asc",  "depth_1km.asc", "meanDailySST_2011_2015.asc",  "varDailySST_2011_2015.asc", "kd490_2013_2015.asc","newWE_1km.asc", "distFromCoast.asc"  )
+
+#store the predictor names and assign each ascii to a list
+keys.variable.names <-
+  c("blank", names(ACERVpaDataFinal)[4:9]) # here make sure the order is the same as above, if you're using different data
+
+for (i in 1:length(keys.grid.names)) {
+  assign(keys.variable.names[i],
+         scan(keys.grid.names[i], skip = 6, na.string = "-9999"),
+         pos = 1)
+}
+# predict to a dataframe
+keys.pred <-
+  data.frame (
+    Depth, MeanSST, VarianceSST, Turbidity, WaveEnergy, DistanceFromCoast )
+#names(keys.pred)<- c("Depth", "MeanSST", "VarianceSST", "Turbidity", "WaveEnergy","DistanceFromCoast")
+
+# remove first row
+keys.pred <- keys.pred[2:95130,]
+keys.pred <- keys.pred[!is.na(blank), ]
+
+par(mfrow = c(1,1))
+par(mar = c(2,2,2,2))
+#gbm.predict.grids(
+#  ACERV_BRT_Model,
+#  keys.pred,
+#  want.grids = T,
+#  sp.name = "ACERV_prediction", #output prediction raster
+#  pred.vec = rep(-9999, 95130),
+#  filepath = "",
+#  num.col = 302,
+#  num.row = 315,
+#  xll = 0,
+#  yll = 0,
+#  cell.size = 1,
+#  no.data = -9999,
+#  plot = T #plots the SDM
+#)
+
+```
+
+Read in acerv_preds.asc and plot SDMs
+Figure 4. Boosted regression tree or ‘niche’ model that predicted the probability of occurrence of Acropora cervicornis along the Florida reef tract (2011 – 2015). 
+```{r Florida reef tract prediction map}
+
+library(sp)
+library(maps)
+library(GISTools)
+
+blank<-raster("blank_1km.asc")
+acerv_map<-raster("ACERV_prediction.asc")
+extent(acerv_map) <- extent(blank)
+proj4string(acerv_map) <-utm
+longlatMap<- projectRaster(acerv_map, crs = longlat)
+
+critical_longlat<- spTransform(allReef, longlat)
+criticalMap<-mask(longlatMap, critical_longlat)
+
+threshBoundary<-criticalMap
+threshBoundary[threshBoundary<.09]<-NA
+threshBoundary09 <- rasterToPolygons(threshBoundary>.09, dissolve=TRUE)
+
+threshBoundary<-criticalMap
+threshBoundary[threshBoundary<.27]<-NA
+threshBoundary27 <- rasterToPolygons(threshBoundary>.27, dissolve=TRUE)
+
+breaks<-seq(0,0.6,by=0.01)
+colors0.6<-rev(terrain.colors(60))
+probOccur<-list(text='Probability of Occurrence', 
+                side=4, line=3)
+scale0.6<- list(at=c(0,0.1,0.2,0.3,0.4,0.5,0.6),
+                        labels=c(0,0.1,0.2,0.3,0.4,0.5,0.6))
+par(mar=c(1,1,1,1))
+#Florida reef tract
+plot_Fig4 <- function() {
+    par(oma=c(1, 1, 1, 1), mar=c(0,0,0,1))
+    #dev.new(width=6, height=8)
+    plot(criticalMap, ylim=c(24.35972, 27.32156), legend.args=probOccur, axis.args= scale0.6, xaxt="n", yaxt="n",
+         tck = 0.02, col = colors0.6, breaks = breaks)
+    plot(FLMap, add=TRUE, col = "grey")
+    plot(threshBoundary09, border = "blue",lty=2, add=T)
+    plot(threshBoundary27, border = "red", lty=3, add=T)
+    axis(1, at=seq(-83,-80,1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(2, at=seq(25,27,1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(3, at=seq(-83,-80,1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(4, at=seq(25,27,1), NA, cex.axis=.7, font=1, tck=.02)
+    text(c(-81, -80.1), 24.5, c("81°W", "80°W"))
+    text(-82.9, seq(25.0,26.0,1), c("25°N", "26°N"))
+    maps::map.scale(x= -82.7, y= 25.5, relwidth=0.2, ratio=FALSE)
+    arrows(-82.8, 26.4, -82.8, 26.65, length=0.1)
+    text(-82.8, 26.5, "N")
+    box(which = "plot")
+    legend("topleft",  col=c("blue","red"),lty=c(2,3), title="Threshold", c("> 9%", "> 27%"), pt.cex=2)
+}
+
+png(  "Fig4.png",  width     = 4.5,  height= 4,  units = "in",  res = 600,  pointsize = 8)
+plot_Fig4() #print figure
+dev.off()
+
+```
+
+S4 Figure. Probability of occurrence of Acropora cervicornis in the Florida reef tract (2011 – 2015) above the 9% and 27% threshold values subregional detail maps. 
+(a) northern reef tract (b) Biscayne (c) Upper Keys (d) Middle Keys, (e) lower Keys,  (f) Marquesas, and (g) Dry Tortugas Subregional detail maps
+```{r Subregional detail maps}
+library(rgdal)
+library(maptools)
+subregions <- readOGR(".","Unified_Florida_Reef_Map_v2.0_Regions")
+northReef<- subset(subregions, OBJECTID %in% c(2,3,4,5,12))
+northAggregated<-aggregate(northReef)
+mydata=c("1","2","3")
+names(mydata)<-c("Region", "SHAPE_Leng", "SHAPE_Area")
+
+southReefAll<-subset(subregions, OBJECTID %in% c(1,7,8,9,10,11))
+subregions<-bind(southReefAll,northAggregated)
+subregionslonglat<- spTransform(subregions, longlat)
+subregionsutm<- spTransform(subregions, utm)
+
+northernReef<- extent(subregionslonglat[7,])
+biscayne<- extent(subregionslonglat[2,])
+upperKeys<- extent(subregionslonglat[6,])
+middleKeys<- extent(subregionslonglat[3,])
+lowerKeys<- extent(subregionslonglat[5,])
+marquesas<- extent(subregionslonglat[1,])
+dryTortugas<-extent(subregionslonglat[4,])
+
+#h) key
+plot_S4Fig_h <- function(){
+  par(oma=c(0, 0, 0, 1), mar=c(0,0,0,0))
+  plot(FLMap, xlim=c(-83.15, -79.93873), ylim=c(24.3, 27.2643), col = "gray")
+  plot(subregionslonglat, add=T, col="blue")
+  plot(FLMap,col = "gray30", add=T)
+  box(which="plot")
+  axis(1, at=seq(-83,-80,1), NA, cex.axis=.7, font=1, tck=.02)
+  axis(2, at=seq(25,27,1), NA, cex.axis=.7, font=1, tck=.02)
+  axis(3, at=seq(-83,-80,1), NA, cex.axis=.7, font=1, tck=.02)
+  axis(4, at=seq(25,27,1), NA, cex.axis=.7, font=1, tck=.02)
+  text(c(-81, -80.15), 24.3, c("81°W", "80°W"))
+  text(-82.9, seq(25.0,26.0,1), c("25°N", "26°N"))
+  maps::map.scale(x= -82.7, y= 25.5, relwidth=0.2, ratio=FALSE)
+  arrows(-83, 26.8, -83, 27.3, length=0.1)
+  text(-83, 27, "N")
+  text(subregionslonglat, c("b","f","d","a","c","e","g",""), cex=1.5, col = "white")
+}
+
+png( "S4h.png",  width= 2,  height= 2,  units = "in",
+  res   = 600,  pointsize = 9)
+plot_S4Fig_h() #print figure
+dev.off()
+
+#a) Dry Tortugas-83.3,-82.6)24.5,24.9
+plot_S4Fig_a <- function(){
+    par(oma=c(0, 0, 0, 1), mar=c(0,0,0,1))
+    plot(criticalMap,
+    xlim = c(dryTortugas@xmin,dryTortugas@xmax) , ylim=c(dryTortugas@ymin, dryTortugas@ymax),
+    legend.args=probOccur, axis.args= scale0.6, 
+    xaxt="n",yaxt="n", col = colors0.6, breaks = breaks)
+    plot(threshBoundary09, border = "blue", lty=2, add=T)
+    plot(threshBoundary27, border = "red", lty=3, add=T)
+    
+    axis(1, at=seq(-83,-81.8,.1), NA, font=1, tck=.02)
+    axis(2, at=seq(24.4,25,.1), NA, font=1, tck=.02)
+    axis(3, at=seq(-83,-81.8,.1), NA, font=1, tck=.02)
+    axis(4, at=seq(24.4,25,.1), NA, font=1, tck=.02)
+    
+    text(c(-82.8,-82.64), 24.75, c("82.8°W","82.6°W"))
+    text(-83.03, seq(24.6,24.7,.1), c("24.6°N","24.7°N"))
+    
+    legend("bottomleft", pch = c(20,NA,NA), lty=c(NA,2,3), col=c("grey","blue","red"), c("Land", "> 9% Threshold","> 27% Threshold"), pt.cex=2)
+    
+    maps::map.scale(x= -82.79, y= 24.57, relwidth=0.2, ratio=FALSE)
+    arrows(-82.68, 24.66, -82.68, 24.72, length=0.1)
+    text(-82.68, 24.68, "N")
+    
+}
+png( "S4a.png",  width= 3,  height= 2,  units = "in",
+  res   = 600,  pointsize = 9)
+plot_S4Fig_a() #print figure
+dev.off()
+
+#b) marquesas
+plot_S4Fig_b <- function(){
+    par(oma=c(0, 0, 0, 1), mar=c(0,0,0,1))
+    plot(criticalMap,
+         xlim = c(marquesas@xmin, marquesas@xmax),
+         ylim=c(24.4,24.7), 
+         legend.args=probOccur, axis.args= scale0.6, 
+         xaxt='n',yaxt='n', col = colors0.6, breaks = breaks)
+    plot(FLMap, add=TRUE, col = "grey")
+    plot(threshBoundary09, border = "blue", lty=2, add=T)
+    plot(threshBoundary27, border = "red", lty=3, add=T)
+    
+    axis(1, at=seq(-81.8,-82.8,-.1), NA, font=1, tck=.02)
+    axis(2, at=seq(24.4,24.7,.1), NA, font=1, tck=.02)
+    axis(3, at=seq(-81.8,-82.8,-.1), NA, font=1, tck=.02)
+    axis(4, at=seq(24.4,24.7,.1), NA, font=1, tck=.02)
+    text(seq(-82.2,-82,.2), 24.35, c("82.2°W","82°W"))
+    text(-82.52, seq(24.5,24.6,.1), c("24.5°N","24.6°N"))
+    
+    legend("topleft", pch = c(20,NA,NA), lty=c(NA,2,3), col=c("grey","blue","red"), c("Land", "> 9% Threshold","> 27% Threshold"), pt.cex=2)
+    maps::map.scale(x= -82.4, y= 24.5, relwidth=0.2, ratio=FALSE)
+    arrows(-81.9, 24.67, -81.9, 24.74, length=0.1)
+    text(-81.9, 24.7, "N")
+    box(which = "plot")
+}
+png( "S4b.png",  width= 4,  height= 2,  units = "in",
+  res   = 600,  pointsize = 10)
+plot_S4Fig_b() #print figure
+dev.off()
+
+#c) Lower keys
+plot_S4Fig_c <- function(){
+      par(oma=c(0, 0, 0, 1), mar=c(0,0,0,1))
+      plot(criticalMap,
+           xlim = c(lowerKeys@xmin, lowerKeys@xmax),
+           ylim=c(lowerKeys@ymin,24.8), 
+           legend.args=probOccur, axis.args= scale0.6, xaxt='n',yaxt='n',
+            col = colors0.6, breaks = breaks)
+      plot(FLMap, add=TRUE, col = "grey")
+      plot(threshBoundary09, border = "blue", lty=2, add=T)
+      plot(threshBoundary27, border = "red", lty=3, add=T)
+      axis(1, at=seq(-82.6,-81.2,.1), NA, font=1, tck=.02)
+      axis(2, at=seq(24.4,24.7,.1), NA, font=1, tck=.02)
+      axis(3, at=seq(-82.6,-81.2,.1), NA, font=1, tck=.02)
+      axis(4, at=seq(24.4,24.7,.1), NA, font=1, tck=.02)
+      
+      text(c(-81.4,-81.23), 24.4, c("81.4°W","81.2°W"))
+      text(-81.75, seq(24.4,24.6,.2), c("24.4°N","24.6°N"))
+      
+      legend("topleft", pch = c(20,NA,NA), lty=c(NA,2,3), col=c("grey","blue","red"), c("Land", "> 9% Threshold","> 27% Threshold"), pt.cex=2)
+      maps::map.scale(x= -81.5, y= 24.5, relwidth=0.3, ratio=FALSE)
+      arrows(-81.25, 24.74, -81.25, 24.81, length=0.1)
+      text(-81.25, 24.77, "N")
+}
+
+png( "S4c.png",  width= 3.2,  height= 2,  units = "in",
+  res   = 600,  pointsize = 9)
+plot_S4Fig_c() #print figure
+dev.off()
+
+#d) middle keys
+plot_S4Fig_d <- function(){
+    par(oma=c(0, 0, 0, 1), mar=c(0, 0, 0, 1))
+    plot(criticalMap, xlim = c(middleKeys@xmin, middleKeys@xmax),      ylim=c(middleKeys@ymin,middleKeys@ymax), 
+         legend.args=probOccur, axis.args= scale0.6, 
+         xaxt='n',yaxt='n', col = colors0.6, breaks = breaks)
+    plot(threshBoundary09, border = "blue", lty=2, add=T)
+    plot(threshBoundary27, border = "red", lty=3, add=T)
+    plot(FLMap, add=TRUE, col = "grey")
+    
+    axis(1, at=seq(-81.2,-80.6,.2), NA, font=1, tck=.02)
+    axis(2, at=seq(24.6,24.9,.1), NA, font=1, tck=.02)
+    axis(3, at=seq(-81.2,-80.6,.2), NA, font=1, tck=.02)
+    axis(4, at=seq(24.6,24.9,.1), NA, font=1, tck=.02)
+    
+    text(c(-81.,-80.6), 24.53, c("81°W","80.6°W"))
+    text(-81.17, c(24.6,24.8), c("24.6°N","24.8°N"))
+    
+    legend("topleft", pch = c(20,NA,NA), lty=c(NA,2,3), col=c("grey","blue","red"), c("Land", "> 9% Threshold","> 27% Threshold"), pt.cex=2)
+    maps::map.scale(x= -80.9, y= 24.66, relwidth=0.2, ratio=FALSE)
+    arrows(-80.75, 24.92, -80.75, 24.99, length=0.1)
+    text(-80.75, 24.95, "N")
+    box(which = "plot")
+}
+
+png( "S4d.png",  width= 3.2,  height= 2,  units = "in",
+  res   = 600,  pointsize = 9)
+plot_S4Fig_d() #print figure
+dev.off()
+
+#e) upper keys
+plot_S4Fig_e <- function(){
+    par(oma=c(0, 0, 0, 1), mar=c(0,0,0,1))
+    plot(criticalMap, xlim = c(upperKeys@xmin, upperKeys@xmax), ylim=c(upperKeys@ymin,upperKeys@ymax),  legend.args=probOccur, axis.args= scale0.6, 
+         tck = 0.02, col = colors0.6, breaks = breaks, xaxt='n',yaxt='n')
+    plot(FLMap, add=TRUE, col = "grey")
+    plot(threshBoundary09, border = "blue", lty=2, add=T)
+    plot(threshBoundary27, border = "red", lty=3, add=T)
+   
+    axis(1, at=seq(-80.6,-80.2,.1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(2, at=seq(24.9,25.3,.1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(3, at=seq(-80.6,-80.2,.1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(4, at=seq(24.9,25.3,.1), NA, cex.axis=.7, font=1, tck=.02)
+    
+    text(seq(-80.4,-80.2,.2), 24.86, c("80.4°W", "80.2°W"))
+    text(-80.58, seq(25,25.2,.2), c("25°N","25.2°N"))
+    legend("topleft", pch = c(20,NA,NA), lty=c(NA,2,3), col=c("grey","blue","red"), c("Land", "> 9% Threshold","> 27% Threshold"), pt.cex=2)
+    maps::map.scale(x= -80.4, y= 24.93, relwidth=0.3, ratio=FALSE)
+    arrows(-80.2, 25.08, -80.2, 25.13, length=0.1)
+    text(-80.2, 25.1, "N")
+    box(which = "plot")
+}
+
+png( "S4e.png",  width= 3.4,  height= 3,  units = "in",
+  res   = 600,  pointsize = 9)
+plot_S4Fig_e() #print figure
+dev.off()
+
+#f) biscayne
+plot_S4Fig_f <- function(){
+    par(oma=c(0, 0, 0, 1), mar=c(0,0,0,1))
+    plot(criticalMap, xlim = c(biscayne@xmin, -80.04),
+         ylim=c(biscayne@ymin,biscayne@ymax),  legend.args=probOccur, axis.args= scale0.6, 
+         tck = 0.02, col = colors0.6, breaks = breaks, xaxt='n',yaxt="n")
+    plot(threshBoundary09, border = "blue", lty=2, add=T)
+    plot(threshBoundary27, border = "red", lty=3, add=T)
+    plot(FLMap, add=TRUE, col = "grey")
+    
+    axis(1, at=seq(-80.3,-80.,.1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(2, at=seq(25.3,25.7,.1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(3, at=seq(-80.3,-80.,.1), NA, cex.axis=.7, font=1, tck=.02)
+    axis(4, at=seq(25.3,25.7,.1), NA, cex.axis=.7, font=1, tck=.02)
+    
+    text(c(-80.2,-80.1), 25.28, c("80.2°W","80.1°W"))
+    text(-80.35, seq(25.3,25.5,.2), c("25.3°N","25.5°N"))
+    
+    legend("topleft", pch = c(20,NA,NA), lty=c(NA,2,3), col=c("grey","blue","red"), c("Land", "> 9% Threshold","> 27% Threshold"), pt.cex=2)
+    maps::map.scale(x= -80.29, y= 25.6, relwidth=0.2, ratio=FALSE)
+    arrows(-80.07, 25.31, -80.07, 25.37, length=0.1)
+    text(-80.07, 25.34, "N")
+    box(which = "plot")
+}
+
+png( "S4f.png",  width= 3.1,  height= 3,  units = "in",
+  res   = 600,  pointsize = 9)
+plot_S4Fig_f() #print figure
+dev.off()
+
+#g) Northern reef tract
+dev.off()
+plot_S4Fig_g <- function(){
+    par(oma=c(0, 0, 0, 1), mar=c(0,0,0,1))
+    plot(criticalMap, xlim = c(northernReef@xmin, northernReef@xmax), family = "Arial", ylim=c(northernReef@ymin, northernReef@ymax), legend.args=probOccur, axis.args= scale0.6, 
+        xaxt='n', yaxt='n', col = colors0.6, breaks = breaks)
+    plot(threshBoundary09, border = "blue", lty=2, add=T)
+    plot(threshBoundary27, border = "red", lty=3, add=T)
+    plot(FLMap, add=TRUE, col = "grey")
+    text(c(-80.2,-80), 25.8, c("80.2°W","80°W"))
+    text(-80.33, c(26,27), c("26°N","27°N") )
+    
+    axis(1, at=seq(-80,-80.2,-.2), NA, cex.axis=.7, font=1, tck=.02)
+    axis(2, at=seq(25,27,.2), NA, cex.axis=.7, font=1, tck=.02)
+    axis(3, at=seq(-80,-80.2,-.2), NA, cex.axis=.7, font=1, tck=.02)
+    axis(4, at=seq(25,27,.2), NA, cex.axis=.7, font=1, tck=.02)
+    legend("topleft", pch = c(20,NA,NA), lty=c(NA,2,3), col=c("grey","blue","red"), c("Land", "> 9% Threshold","> 27% Threshold"), pt.cex=2)
+
+    maps::map.scale(x= -80.35, y= 26.7, relwidth=0.3, ratio=FALSE)
+    arrows(-80, 25.87, -80, 25.93, length=0.1)
+    text(-80, 25.9, "N")
+    box(which = "plot")
+}
+
+png( "S4g.png",  width= 2.5,  height= 5.25,  units = "in",
+  res   = 600,  pointsize = 9)
+plot_S4Fig_g() #print figure
+dev.off()
+
+```
+
+Using package spatialEco, calculate amount of area above different thresholds.
+```{r zonal statistics}
+library(stats)
+library(spatialEco)
+library(raster)
+
+# area by subregion
+threshold0.09 <- function(x, t=0.09) {
+  if ( length(x[x >= t]) < 1 )  return(0) 
+    if ( length(x[x >= t]) == length(x) ) return(1) 
+     else return( length(x[x >= t]) ) 
+}
+threshold0.27 <- function(x, t=0.27) {
+  if ( length(x[x >= t]) < 1 )  return(0) 
+    if ( length(x[x >= t]) == length(x) ) return(1) 
+     else return( length(x[x >= t]) ) 
+}
+subregions0.09 <- zonal.stats(x=subregionslonglat, y=criticalMap, stat=threshold0.09, trace=TRUE, plot=TRUE)
+par(mar=c(0,0,0,0))
+plot(criticalMap>.09)
+plot(subregionslonglat, add=T)
+subregions0.27 <- zonal.stats(x=subregionslonglat, y=criticalMap, stat=threshold0.27, trace=TRUE, plot=TRUE)
+
+thresholdList<-cbind(as.character(subregionslonglat$Region), subregions0.09,subregions0.27)
+
+subregionsums<- c("Total", sum(as.numeric(thresholdList[,2]), na.rm = T), sum(as.numeric(thresholdList[,3]), na.rm = T))
+
+thresholdListComplete<-rbind(thresholdList, subregionsums)
+thresholdListComplete
+```
+
+Figure 3. Relative importance of environmental predictors
+```{r Partial dependency plots of the boosted regression tree model}
+
+#plot fitted vs predictors and relative importance
+gbm.plot(ACERV_BRT_Model, n.plots = 6, plot.layout = c(2,3), smooth = TRUE, write.title = F, cex.axis = 2, cex.lab = 2,  rug.tick = 0.04)
+ 
+```
+
+S3 Figure. Interaction plots for the boosted regression tree niche model.
+```{r interactions}
+
+acerv.brt.int <- gbm.interactions(ACERV_BRT_Model)
+acerv.brt.int$rank.list
+acerv.brt.int$interactions
+
+#ACERV_BRT_Model$var.names<- c("Depth", "MeanSST", "Variance of", "Turbidity", "WaveEnergy","DistanceFromCoast")
+
+png( "S3A.png",  width= 5,  height= 5,  units = "in",
+  res   = 300,  pointsize = 8)
+par(mfrow=c(1,1))
+par(mar=c(1,1,0,0))
+
+gbm.perspec(ACERV_BRT_Model, x.label = "Wave Energy", y.label = "Turbidity(K490)", 
+            5,
+            4,
+            x.range = c(0, 2.5),
+            y.range = c(0, 0.3),
+            z.range = c(0, .3))
+dev.off()
+
+png( "S3B.png",  width= 5,  height= 5,  units = "in",
+  res   = 300,  pointsize = 8)
+gbm.perspec(ACERV_BRT_Model,x.label = "Mean Daily SST", y.label = "Thermal Variability",
+            2,
+            3,
+            x.range = c(20,30),
+            y.range = c(0,50 ),
+            z.range = c(0, 0.7))
+dev.off()
+```
+
+Confusion matrices
+S5 Figure. Model evaluation metrics at different thresholds. 
+```{r confusion matrix}
+
+library(SDMTools)
+
+predDec<- extract(criticalMap, testCREMP)
+
+matrix09SDMTools<-confusion.matrix(CREMPunique$Acropora_cervicornis,predDec, threshold = 0.09)
+matrix27SDMTools<-confusion.matrix(CREMPunique$Acropora_cervicornis,predDec, threshold = 0.27)
+
+matrix_09<-accuracy(CREMPunique$Acropora_cervicornis,predDec, threshold = .09)
+matrix_27<-accuracy(CREMPunique$Acropora_cervicornis,predDec, threshold = .27)
+
+thresholds<-seq(0.03,0.3,.01)
+AUCs<-acc<-sens<-spec<-areas<-list()
+
+for(i in 1:length(thresholds)){
+  predDec<- extract(criticalMap, testCREMP)
+  th<-thresholds[i]
+  matrix_i<-accuracy(CREMPunique$Acropora_cervicornis,predDec, threshold = th)
+  AUCs[i]<-matrix_i$AUC
+  sens[i]<-matrix_i$sensitivity
+  spec[i]<-matrix_i$specificity
+  acc[i]<-matrix_i$prop.correct
+  areas[i]<-area(criticalMap > thresholds[i])
+}
+
+#S5 Figure. Model evaluation metrics at different thresholds. 
+png( "S5Figure.png",  width= 5,  height= 4,  units = "in",
+  res   = 300,  pointsize = 8)
+par(mar=c(5,3,3,5))
+plot(thresholds,AUCs, type="l", ylim=c(0,1), lwd=3, xlab = "Thresholds", ylab="")
+lines(thresholds,sens, col = "blue")
+lines(thresholds,spec, col = "orange")
+lines(thresholds,acc, col = "purple", lwd=2)
+lines(thresholds,as.double(areas)/3000, col = "green", lwd=2, lty=2)
+axis(side = 4, at=seq(0,1.2,.2), labels=seq(0,3000,450))
+
+mtext(side = 4, line = 3, expression(paste("Habitable Area (k ", m^{2})~ ")"))
+abline(v=.09, lty=2)
+abline(v=.27, lty=2)
+
+legend(x = .21,y=0.52, 
+       legend = c("AUC", "Specificity", "Sensitivity", "Accuracy", "Habitable Area"), lwd=c(3,1,1,2,2), lty = c(1,1,1,1,2),
+       col = c("black","orange","blue", "purple","green"))
+box(which = "plot")
+dev.off()
+```
