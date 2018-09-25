@@ -1,16 +1,20 @@
 
----
-title: "Code for Niche space of Acropora cervicornis in the Florida reef tract"
-author: "Elizabeth Brown"
-date: "4/7/18"
-editor_options: 
-  chunk_output_type: console
----
-Adapted from "tutorial_cut down for running.R" Jane Elith and John Leathwick
+Code for "Niche space of Acropora cervicornis in the Florida reef tract" submitted to PLOS One
+
+Code written and tested by: "Elizabeth Brown"
+9/25/18
+
+Adapted from "tutorial_cut down for running.R" Jane Elith and John Leathwick (2009)
 
 ```{r setup libraries / projections / image settings}
 
-setwd() #set working directory to where all files are located
+#getwd() #find out what directory you are working in
+#setwd("C:/Users/Owner/Desktop/NicheSpaceCode") #edit this line to match workspace from getwd()
+#install.packages("packrat")
+#packrat
+library(packrat)
+#init()
+#clean()
 
 library(raster)
 library(rgdal)
@@ -110,7 +114,7 @@ library(ggmap)
 critical <- readOGR(".","Acropora_Critical_Habitat")
 
 #Get map
-m <- get_map(c(-81.5,25.6),zoom=8,maptype="satellite",source="google")
+m <- get_map(location=c(-81.5,25.6),zoom=8,maptype="satellite",source="google")
 ggmap(m) + 
   geom_polygon(data = fortify(critical),
                   aes(long, lat, group = group),
@@ -152,6 +156,7 @@ dev.off()
 Read in environmental raster data
 Output files needed for the BRT
 ```{r Environmental variables}
+library(GISTools)
 
 #Create blank reef mask from Unified Florida Reef Tract polygon
 unified <- readOGR(".","UnifiedFloridaReefTract_poly")
@@ -345,7 +350,7 @@ names(ACERVpaDataFinal)[4:9]
 #Make grid names the same order with the prediction space first
 keys.grid.names <-
   c(
-    "blank_1km.asc",  "depth_1km.asc", "meanDailySST_2011_2015.asc",  "varDailySST_2011_2015.asc", "kd490_2013_2015.asc","newWE_1km.asc", "distFromCoast.asc"  )
+    "blank_1km.asc",  "depth_1km.asc", "meanDailySST_2011_2015.asc",  "varDailySST_2011_2015.asc", "kd490_2013_2015.asc","WE_2011_2015.asc", "distFromCoast.asc"  )
 
 #store the predictor names and assign each ascii to a list
 keys.variable.names <-
@@ -710,6 +715,12 @@ library(spatialEco)
 library(raster)
 
 # area by subregion
+area <- function(x, t) {
+  if ( length(x[x >= t]) < 1 )  return(0) 
+    if ( length(x[x >= t]) == length(x) ) return(1) 
+     else return( length(x[x >= t]) ) 
+}
+
 threshold0.09 <- function(x, t=0.09) {
   if ( length(x[x >= t]) < 1 )  return(0) 
     if ( length(x[x >= t]) == length(x) ) return(1) 
@@ -800,7 +811,7 @@ for(i in 1:length(thresholds)){
   sens[i]<-matrix_i$sensitivity
   spec[i]<-matrix_i$specificity
   acc[i]<-matrix_i$prop.correct
-  areas[i]<-area(criticalMap > thresholds[i])
+  areas[i]<-area(criticalMap , thresholds[i])
 }
 
 #S5 Figure. Model evaluation metrics at different thresholds. 
